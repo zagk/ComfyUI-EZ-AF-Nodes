@@ -8,7 +8,7 @@
 
 ---
 
-A nope pack for advanced prompt-building. Conveniently control parts of text prompts with custom UI.
+A node pack for advanced prompt-building. Conveniently control parts of text prompts with custom UI.
 Pack includes loaders from txt and csv files, dynamic text concatenation tool and easy-to-use input node
 
 # Get Started
