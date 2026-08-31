@@ -1,7 +1,8 @@
 import { app } from "../../../scripts/app.js";
 
 // Code largely inspired by FILL NODES, credit to the author: https://github.com/filliptm/ComfyUI_Fill-Nodes
-// Adapted from EZ_CSV_Loader.js to support XLSX (Excel) files, including sheet selection.
+// Adapted from EZ_CSV_Loader.js to support XLSX (Excel) files.
+// Always reads the first (active) sheet - no sheet-selection UI, since most workbooks used here have one sheet.
 
 app.registerExtension({
     name: "Comfy.EZ_XLSX_Loader",
@@ -21,7 +22,6 @@ async function addXLSXBrowserUI(node) {
     const selectedRowWidget = node.widgets.find(w => w.name === "selected_row");
     const selectionModeWidget = node.widgets.find(w => w.name === "selection_mode");
     const filterTextWidget = node.widgets.find(w => w.name === "filter_text");
-    const sheetNameWidget = node.widgets.find(w => w.name === "sheet_name");
     const textColumnWidget = node.widgets.find(w => w.name === "text_column");
 
     if (!xlsxFileWidget || !selectedRowWidget || !selectionModeWidget || !filterTextWidget) {
@@ -33,9 +33,6 @@ async function addXLSXBrowserUI(node) {
     selectedRowWidget.hidden = true;
     selectionModeWidget.hidden = false;
     filterTextWidget.hidden = false;
-    if (sheetNameWidget) {
-        sheetNameWidget.hidden = false;
-    }
     if (textColumnWidget) {
         textColumnWidget.hidden = false;
     }
@@ -112,7 +109,7 @@ async function addXLSXBrowserUI(node) {
     }
 
     async function loadAllThumbnails() {
-        const key = `${currentFile}|${sheetNameWidget ? sheetNameWidget.value : ""}`;
+        const key = currentFile;
         if (thumbnailsLoadedKey === key) return;
         thumbnailsLoadedKey = key;
         thumbnailCache = new Map();
@@ -120,7 +117,7 @@ async function addXLSXBrowserUI(node) {
             const response = await fetch('/ez_xlsx_browser/get_thumbnails_batch', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ xlsx_path: currentFile, sheet: sheetNameWidget ? sheetNameWidget.value : "", size: 128 })
+                body: JSON.stringify({ xlsx_path: currentFile, size: 128 })
             });
             if (!response.ok) {
                 node.setDirtyCanvas(true);
@@ -155,14 +152,14 @@ async function addXLSXBrowserUI(node) {
             node.setDirtyCanvas(true);
             return;
         }
-        const key = `${currentFile}|${sheetNameWidget ? sheetNameWidget.value : ""}|${origIdx}`;
+        const key = `${currentFile}|${origIdx}`;
         if (previewImageLoadKey === key) return;
         previewImageLoadKey = key;
         try {
             const response = await fetch('/ez_xlsx_browser/get_thumbnail', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ xlsx_path: currentFile, sheet: sheetNameWidget ? sheetNameWidget.value : "", orig_row_index: origIdx })
+                body: JSON.stringify({ xlsx_path: currentFile, orig_row_index: origIdx })
             });
             if (!response.ok) {
                 previewImageBitmap = null;
@@ -184,7 +181,7 @@ async function addXLSXBrowserUI(node) {
             const response = await fetch('/ez_xlsx_browser/get_directory_structure', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: currentFile, filter: filterText, sheet: sheetNameWidget ? sheetNameWidget.value : "" })
+                body: JSON.stringify({ path: currentFile, filter: filterText })
             });
 
             if (!response.ok) {
@@ -328,14 +325,6 @@ async function addXLSXBrowserUI(node) {
         filterText = filterTextWidget.value;
         updateRows();
     };
-
-    if (sheetNameWidget) {
-        sheetNameWidget.callback = () => {
-            selectedRows.clear();
-            selectedRowWidget.value = "";
-            updateRows();
-        };
-    }
 
     if (textColumnWidget) {
         textColumnWidget.callback = () => {
