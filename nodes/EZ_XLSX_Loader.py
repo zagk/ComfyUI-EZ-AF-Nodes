@@ -59,10 +59,8 @@ def resolve_column_index(headers, override="", keywords=None):
     return None
 
 
-def _resolve_sheet(wb, sheet_name=""):
+def _resolve_sheet(wb):
     sheets = wb.sheetnames
-    if sheet_name and sheet_name in sheets:
-        return wb[sheet_name]
     return wb[sheets[0]] if sheets else wb.active
 
 
@@ -92,7 +90,6 @@ class EZ_XLSX_Loader:
                                                                         " Uses seed if opt_seed is connected. Always re-executes node if opt_seed is not connected"}),
             },
             "optional": {
-                "sheet_name": ("STRING", {"default": "", "tooltip": "Name of the sheet to read. Leave empty to use the first (active) sheet."}),
                 "text_column": ("STRING", {"default": "", "tooltip": "Column header whose value becomes the main STRING output (e.g. 'Prompt').\nLeave empty to auto-detect a column named 'Prompt'.\nIf no such column is found, all columns are included, labeled, as before."}),
                 "opt_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "forceInput": True, "tooltip": "Control SEED, used only in 'random' selection mode.\nIf not connected, always re-executes node on prompt"}),
                 "filter_text": ("STRING", {"default": "", "tooltip": "Filter items based on a text string"}),
@@ -113,9 +110,9 @@ class EZ_XLSX_Loader:
     FUNCTION = "browse_xlsx"
 
     CATEGORY = "EZ NODES"
-    DESCRIPTION = "Loads rows from selected xlsx file based on UI selection.\nFirst column is always used to provide labels for UI.\nAuto-detects a 'Prompt' column for text output. Images embedded directly in the xlsx (inserted pictures) are read and returned via the IMAGE output."
+    DESCRIPTION = "Loads rows from selected xlsx file (first/active sheet) based on UI selection.\nAuto-detects a 'Prompt' column for text output. Images embedded directly in the xlsx (inserted pictures) are read and returned via the IMAGE output."
 
-    def browse_xlsx(self, xlsx_file, selection_mode="single", sheet_name="", text_column="",
+    def browse_xlsx(self, xlsx_file, selection_mode="single", text_column="",
                      selected_row="", filter_text="", opt_seed=0):
         global xlsx_path
         xlsx_file = os.path.join(xlsx_path, xlsx_file)
@@ -127,7 +124,7 @@ class EZ_XLSX_Loader:
         if not OPENPYXL_AVAILABLE:
             return ("openpyxl is not installed. Run: pip install openpyxl", xlsx_file, [], _blank_image_tensor())
 
-        data = get_rows_from_xlsx(xlsx_file, sheet_name=sheet_name, filter_text=filter_text)
+        data = get_rows_from_xlsx(xlsx_file, filter_text=filter_text)
         headers = data["headers"]
         rows = data["rows"]
         orig_row_indices = data["orig_row_indices"]
@@ -186,7 +183,7 @@ class EZ_XLSX_Loader:
             first_idx = selected_indices[0]
             if first_idx < len(orig_row_indices):
                 orig_idx = orig_row_indices[first_idx]
-                row_images = get_row_images(xlsx_file, sheet_name=sheet_name)
+                row_images = get_row_images(xlsx_file)
                 img_bytes = row_images.get(orig_idx)
                 if img_bytes:
                     try:
@@ -197,18 +194,18 @@ class EZ_XLSX_Loader:
         return (output_str, xlsx_file, all_outputs, image_tensor)
 
     @classmethod
-    def IS_CHANGED(cls, xlsx_file, selection_mode, sheet_name="", text_column="",
+    def IS_CHANGED(cls, xlsx_file, selection_mode, text_column="",
                     selected_row="", filter_text="", opt_seed=0):
         if selection_mode == "random":
             # For random mode, include seed in the hash only if opt_seed is provided and not 0
             if opt_seed is not None and opt_seed != 0:
-                return str(opt_seed) + str(xlsx_file) + str(selection_mode) + str(filter_text) + str(sheet_name)
+                return str(opt_seed) + str(xlsx_file) + str(selection_mode) + str(filter_text)
             else:
                 return float('nan')  # Fall back to normal random behavior
-        return selected_row + str(xlsx_file) + str(selection_mode) + str(sheet_name) + str(text_column)
+        return selected_row + str(xlsx_file) + str(selection_mode) + str(text_column)
 
     @classmethod
-    def VALIDATE_INPUTS(cls, xlsx_file, selection_mode="single", sheet_name="", text_column="",
+    def VALIDATE_INPUTS(cls, xlsx_file, selection_mode="single", text_column="",
                          selected_row="", filter_text="", opt_seed=0):
         global xlsx_path
         xlsx_file = os.path.join(xlsx_path, xlsx_file)
@@ -252,8 +249,8 @@ def get_sheet_names(file_path):
         return []
 
 
-def get_rows_from_xlsx(file_path, sheet_name="", filter_text=""):
-    """Reads header/data rows using the fast read-only mode.
+def get_rows_from_xlsx(file_path, filter_text=""):
+    """Reads header/data rows from the first (active) sheet using the fast read-only mode.
     Also returns `orig_row_indices`: the 0-indexed worksheet row number for each
     entry in `rows`, so embedded images (which are anchored to worksheet rows)
     can be matched back to a row even after empty rows are filtered out."""
@@ -263,7 +260,7 @@ def get_rows_from_xlsx(file_path, sheet_name="", filter_text=""):
         wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
         try:
             sheets = wb.sheetnames
-            ws = _resolve_sheet(wb, sheet_name)
+            ws = _resolve_sheet(wb)
 
             all_rows = []
             for row in ws.iter_rows(values_only=True):
@@ -293,8 +290,8 @@ def get_rows_from_xlsx(file_path, sheet_name="", filter_text=""):
         return {"headers": [], "rows": [], "orig_row_indices": [], "sheets": []}
 
 
-def get_row_images(file_path, sheet_name=""):
-    """Extracts images embedded directly in the worksheet (e.g. inserted pictures),
+def get_row_images(file_path):
+    """Extracts images embedded directly in the first (active) worksheet (e.g. inserted pictures),
     returning {worksheet_row_0indexed: raw_image_bytes}.
     Embedded-image access requires a normal (non read-only) workbook load."""
     if not OPENPYXL_AVAILABLE or not PIL_AVAILABLE:
@@ -302,7 +299,7 @@ def get_row_images(file_path, sheet_name=""):
     try:
         wb = openpyxl.load_workbook(file_path, data_only=True)
         try:
-            ws = _resolve_sheet(wb, sheet_name)
+            ws = _resolve_sheet(wb)
             mapping = {}
             for img in getattr(ws, "_images", []):
                 try:
@@ -329,7 +326,6 @@ async def api_get_directory_structure_xlsx(request):
         data = await request.json()
         path = data.get("path", "./")
         filter_text = data.get("filter", "")
-        sheet_name = data.get("sheet", "")
 
         if not os.path.isabs(path):
             path = os.path.abspath(path)
@@ -341,7 +337,7 @@ async def api_get_directory_structure_xlsx(request):
         if os.path.isfile(path):
             directory = os.path.dirname(path)
             structure = get_directory_structure(directory)
-            xlsx_data = get_rows_from_xlsx(path, sheet_name=sheet_name, filter_text=filter_text)
+            xlsx_data = get_rows_from_xlsx(path, filter_text=filter_text)
         else:
             structure = get_directory_structure(path)
             xlsx_data = {"headers": [], "rows": [], "orig_row_indices": [], "sheets": []}
@@ -383,7 +379,6 @@ async def api_get_thumbnail_xlsx(request):
     try:
         data = await request.json()
         xlsx_full_path = data.get("xlsx_path", "")
-        sheet_name = data.get("sheet", "")
         orig_row_index = data.get("orig_row_index", None)
 
         if not xlsx_full_path or orig_row_index is None:
@@ -392,7 +387,7 @@ async def api_get_thumbnail_xlsx(request):
         if not PIL_AVAILABLE:
             return web.json_response({"error": "Pillow is not installed"}, status=500)
 
-        row_images = get_row_images(xlsx_full_path, sheet_name=sheet_name)
+        row_images = get_row_images(xlsx_full_path)
         img_bytes = row_images.get(int(orig_row_index))
         if not img_bytes:
             return web.json_response({"error": "No embedded image for this row"}, status=404)
@@ -416,7 +411,6 @@ async def api_get_thumbnails_batch_xlsx(request):
     try:
         data = await request.json()
         xlsx_full_path = data.get("xlsx_path", "")
-        sheet_name = data.get("sheet", "")
         size = int(data.get("size", 128))
 
         if not xlsx_full_path:
@@ -424,7 +418,7 @@ async def api_get_thumbnails_batch_xlsx(request):
         if not PIL_AVAILABLE:
             return web.json_response({"error": "Pillow is not installed"}, status=500)
 
-        row_images = get_row_images(xlsx_full_path, sheet_name=sheet_name)
+        row_images = get_row_images(xlsx_full_path)
         thumbnails = {}
         for orig_idx, img_bytes in row_images.items():
             try:
