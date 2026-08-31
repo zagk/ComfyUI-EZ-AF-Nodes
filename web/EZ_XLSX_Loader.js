@@ -47,9 +47,9 @@ async function addXLSXBrowserUI(node) {
     const ROW_PADDING = 8;
     const EXTRA_ROW_PADDING = 2;
     const SCROLLBAR_WIDTH = 13;
-    const CARD_WIDTH = 112; // Width of a single gallery card (thumbnail + caption)
-    const THUMB_SIZE = 96; // Size of the square image thumbnail inside a card
-    const CAPTION_HEIGHT = 26; // Space reserved below the thumbnail for the style-name caption
+    const CARD_WIDTH = 160; // Width of a single gallery card (thumbnail + caption)
+    const THUMB_SIZE = 144; // Size of the square image thumbnail inside a card (canvas upscales for free, no extra network cost)
+    const CAPTION_HEIGHT = 28; // Space reserved below the thumbnail for the style-name caption
     const CARD_HEIGHT = THUMB_SIZE + CAPTION_HEIGHT;
     const TEXT_PADDING = 10; // Padding for text within row
     const PREVIEW_PADDING = 20; // Padding for preview text
@@ -117,7 +117,7 @@ async function addXLSXBrowserUI(node) {
             const response = await fetch('/ez_xlsx_browser/get_thumbnails_batch', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ xlsx_path: currentFile, size: 128 })
+                body: JSON.stringify({ xlsx_path: currentFile, size: 200 })
             });
             if (!response.ok) {
                 node.setDirtyCanvas(true);
@@ -485,7 +485,7 @@ async function addXLSXBrowserUI(node) {
 
                 // Caption (style name) below the thumbnail
                 ctx.fillStyle = COLORS.text;
-                ctx.font = "11px Arial";
+                ctx.font = "12px Arial";
                 ctx.textAlign = "center";
                 const maxTextWidth = cardWidth - 4;
                 let displayText = label;
