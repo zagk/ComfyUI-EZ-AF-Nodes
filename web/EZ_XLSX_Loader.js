@@ -22,6 +22,7 @@ async function addXLSXBrowserUI(node) {
     const selectionModeWidget = node.widgets.find(w => w.name === "selection_mode");
     const filterTextWidget = node.widgets.find(w => w.name === "filter_text");
     const sheetNameWidget = node.widgets.find(w => w.name === "sheet_name");
+    const textColumnWidget = node.widgets.find(w => w.name === "text_column");
 
     if (!xlsxFileWidget || !selectedRowWidget || !selectionModeWidget || !filterTextWidget) {
         console.error("Required widgets not found:", { xlsxFileWidget, selectedRowWidget, selectionModeWidget, filterTextWidget });
@@ -35,18 +36,24 @@ async function addXLSXBrowserUI(node) {
     if (sheetNameWidget) {
         sheetNameWidget.hidden = false;
     }
+    if (textColumnWidget) {
+        textColumnWidget.hidden = false;
+    }
 
     const MIN_WIDTH = 310;
     const MIN_HEIGHT = 400;
     const TOP_PADDING = 250;
+    const IMAGE_PREVIEW_BOX = { x: 10, y: 15, size: 120 };
     const BOTTOM_PADDING = 5;
     const BOTTOM_SKIP = 10;
     const TOP_BAR_HEIGHT = 0;
-    const ROW_HEIGHT = 28;
-    const ROW_PADDING = 5;
+    const ROW_PADDING = 8;
     const EXTRA_ROW_PADDING = 2;
     const SCROLLBAR_WIDTH = 13;
-    const MIN_COLUMN_WIDTH = 150; // Minimum width for a column
+    const CARD_WIDTH = 112; // Width of a single gallery card (thumbnail + caption)
+    const THUMB_SIZE = 96; // Size of the square image thumbnail inside a card
+    const CAPTION_HEIGHT = 26; // Space reserved below the thumbnail for the style-name caption
+    const CARD_HEIGHT = THUMB_SIZE + CAPTION_HEIGHT;
     const TEXT_PADDING = 10; // Padding for text within row
     const PREVIEW_PADDING = 20; // Padding for preview text
     const PREVIEW_SKIP = 152; // Skip for preview text
@@ -76,10 +83,101 @@ async function addXLSXBrowserUI(node) {
     let selectedRows = new Set();
     let headers = [];
     let rows = [];
+    let origRowIndices = []; // worksheet row (0-indexed) for each entry in `rows`, used to match embedded images
+    let nameColIndex = 0; // column used as the caption under each gallery thumbnail (auto-detects "Style Name")
     let scrollOffset = 0;
     let isDragging = false;
     let scrollStartY = 0;
     let scrollStartOffset = 0;
+
+    // Image preview state - images embedded directly in the xlsx (inserted pictures)
+    let previewImageBitmap = null;
+    let previewImageLoadKey = null;
+
+    // Gallery thumbnail cache: worksheet row (0-indexed, as string) -> HTMLImageElement
+    let thumbnailCache = new Map();
+    let thumbnailsLoadedKey = null;
+
+    function computeNameColumnIndex() {
+        let idx = headers.findIndex(h => String(h).trim().toLowerCase() === "style name");
+        if (idx === -1) idx = headers.findIndex(h => String(h).trim().toLowerCase().includes("name"));
+        if (idx === -1) idx = 0;
+        nameColIndex = idx;
+    }
+
+    function rowLabel(rowIndex) {
+        const row = rows[rowIndex];
+        if (!row) return `Row ${rowIndex + 1}`;
+        return row[nameColIndex] || `Row ${rowIndex + 1}`;
+    }
+
+    async function loadAllThumbnails() {
+        const key = `${currentFile}|${sheetNameWidget ? sheetNameWidget.value : ""}`;
+        if (thumbnailsLoadedKey === key) return;
+        thumbnailsLoadedKey = key;
+        thumbnailCache = new Map();
+        try {
+            const response = await fetch('/ez_xlsx_browser/get_thumbnails_batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ xlsx_path: currentFile, sheet: sheetNameWidget ? sheetNameWidget.value : "", size: 128 })
+            });
+            if (!response.ok) {
+                node.setDirtyCanvas(true);
+                return;
+            }
+            const data = await response.json();
+            const thumbs = data.thumbnails || {};
+            for (const [origIdxStr, dataUrl] of Object.entries(thumbs)) {
+                const img = new Image();
+                img.onload = () => node.setDirtyCanvas(true);
+                img.src = dataUrl;
+                thumbnailCache.set(origIdxStr, img);
+            }
+            node.setDirtyCanvas(true);
+        } catch (error) {
+            console.error("Error loading gallery thumbnails:", error);
+        }
+    }
+
+    async function updatePreviewImage() {
+        if (selectedRows.size === 0) {
+            previewImageBitmap = null;
+            previewImageLoadKey = null;
+            node.setDirtyCanvas(true);
+            return;
+        }
+        const idx = Array.from(selectedRows)[0];
+        const origIdx = origRowIndices[idx];
+        if (origIdx === undefined) {
+            previewImageBitmap = null;
+            previewImageLoadKey = null;
+            node.setDirtyCanvas(true);
+            return;
+        }
+        const key = `${currentFile}|${sheetNameWidget ? sheetNameWidget.value : ""}|${origIdx}`;
+        if (previewImageLoadKey === key) return;
+        previewImageLoadKey = key;
+        try {
+            const response = await fetch('/ez_xlsx_browser/get_thumbnail', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ xlsx_path: currentFile, sheet: sheetNameWidget ? sheetNameWidget.value : "", orig_row_index: origIdx })
+            });
+            if (!response.ok) {
+                previewImageBitmap = null;
+                node.setDirtyCanvas(true);
+                return;
+            }
+            const blob = await response.blob();
+            previewImageBitmap = await createImageBitmap(blob);
+            node.setDirtyCanvas(true);
+        } catch (error) {
+            console.error("Error loading image preview:", error);
+            previewImageBitmap = null;
+            node.setDirtyCanvas(true);
+        }
+    }
 
     async function updateRows() {
         try {
@@ -103,7 +201,11 @@ async function addXLSXBrowserUI(node) {
 
             headers = data.headers || [];
             rows = data.rows || [];
+            origRowIndices = data.orig_row_indices || [];
+            computeNameColumnIndex();
             node.setDirtyCanvas(true);
+            updatePreviewImage();
+            loadAllThumbnails();
         } catch (error) {
             console.error("Error updating rows:", error);
         }
@@ -145,6 +247,7 @@ async function addXLSXBrowserUI(node) {
         const selectedRowsString = Array.from(selectedRows).join(",");
         selectedRowWidget.value = selectedRowsString;
         node.setDirtyCanvas(true);
+        updatePreviewImage();
     }
 
     function drawHeadersPreview(ctx) {
@@ -186,7 +289,7 @@ async function addXLSXBrowserUI(node) {
         } else if (selectionModeWidget.value === "single" && selectedRows.size === 1 && headers.length > 0) {
             const idx = Array.from(selectedRows)[0];
             if (rows[idx]) {
-                displayText = rows[idx][0] || `Row ${idx+1}`;
+                displayText = rowLabel(idx);
             }
         }
         if (ctx.measureText(displayText).width > maxWidth) {
@@ -234,6 +337,12 @@ async function addXLSXBrowserUI(node) {
         };
     }
 
+    if (textColumnWidget) {
+        textColumnWidget.callback = () => {
+            node.setDirtyCanvas(true);
+        };
+    }
+
     // Add Invert Selection button widget
     const invertButton = node.addWidget("button", "Invert Selection", null, () => {
         if (selectionModeWidget.value !== "multiple" && selectionModeWidget.value !== "random") return;
@@ -263,6 +372,26 @@ async function addXLSXBrowserUI(node) {
         if (origSelectionModeCallback) origSelectionModeCallback();
     };
 
+    function drawImagePreview(ctx) {
+        const { x, y, size } = IMAGE_PREVIEW_BOX;
+        if (previewImageBitmap) {
+            const iw = previewImageBitmap.width, ih = previewImageBitmap.height;
+            const scale = Math.min(size / iw, size / ih);
+            const dw = iw * scale, dh = ih * scale;
+            const dx = x + (size - dw) / 2, dy = y + (size - dh) / 2;
+            ctx.fillStyle = "#000000";
+            ctx.fillRect(x, y, size, size);
+            ctx.drawImage(previewImageBitmap, dx, dy, dw, dh);
+        } else {
+            ctx.strokeStyle = COLORS.headers;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x, y, size, size);
+            ctx.fillStyle = COLORS.headers;
+            ctx.font = "10px Arial";
+            ctx.fillText("no image", x + 8, y + size / 2);
+        }
+    }
+
     node.onDrawBackground = function(ctx) {
         if (!this.flags.collapsed) {
             const pos = TOP_PADDING - TOP_BAR_HEIGHT;
@@ -270,6 +399,7 @@ async function addXLSXBrowserUI(node) {
             ctx.fillRect(0, pos, this.size[0], this.size[1] - pos - BOTTOM_SKIP);
             ctx.fillStyle = COLORS.topBar;
             ctx.fillRect(0, pos, this.size[0], TOP_BAR_HEIGHT);
+            drawImagePreview(ctx);
             drawHeadersPreview(ctx);
             drawPreviewText(ctx);
             ctx.save();
@@ -308,47 +438,77 @@ async function addXLSXBrowserUI(node) {
     }
 
     function getTotalRowsHeight() {
-        const columns = Math.max(2, Math.floor((node.size[0] - SCROLLBAR_WIDTH) / MIN_COLUMN_WIDTH));
+        const columns = Math.max(2, Math.floor((node.size[0] - SCROLLBAR_WIDTH) / CARD_WIDTH));
         const rowCount = rows.length;
         const rowsPerCol = Math.ceil(rowCount / columns);
-        return rowsPerCol * (ROW_HEIGHT + ROW_PADDING);
+        return rowsPerCol * (CARD_HEIGHT + ROW_PADDING);
     }
 
     function drawRows(ctx, x, y, width, height) {
         ctx.fillStyle = COLORS.background;
         ctx.fillRect(x, y, width, height);
-        const columns = Math.max(2, Math.floor((node.size[0] - SCROLLBAR_WIDTH) / MIN_COLUMN_WIDTH));
-        const columnWidth = (width - ROW_PADDING * (columns + 1)) / columns;
+        const columns = Math.max(2, Math.floor((node.size[0] - SCROLLBAR_WIDTH) / CARD_WIDTH));
+        const cardWidth = (width - ROW_PADDING * (columns + 1)) / columns;
         const rowCount = rows.length;
         const rowsPerCol = Math.ceil(rowCount / columns);
         const visibleHeight = height;
-        const startRow = Math.floor(scrollOffset / (ROW_HEIGHT + ROW_PADDING));
-        const endRow = Math.min(rowsPerCol, startRow + Math.ceil(visibleHeight / (ROW_HEIGHT + ROW_PADDING)) + 2);
+        const startRow = Math.floor(scrollOffset / (CARD_HEIGHT + ROW_PADDING));
+        const endRow = Math.min(rowsPerCol, startRow + Math.ceil(visibleHeight / (CARD_HEIGHT + ROW_PADDING)) + 2);
+
         for (let row = startRow; row < endRow; row++) {
             for (let col = 0; col < columns; col++) {
                 const rowIndex = row * columns + col;
                 if (rowIndex >= rows.length) break;
-                const rowData = rows[rowIndex];
-                const label = rowData[0] || `Row ${rowIndex+1}`;
-                const xPos = x + EXTRA_ROW_PADDING + ROW_PADDING + col * (columnWidth + ROW_PADDING);
-                const yPos = y + EXTRA_ROW_PADDING + row * (ROW_HEIGHT + ROW_PADDING) + ROW_PADDING;
-                // Draw row background
-                const bgColor = selectedRows.has(rowIndex) ? COLORS.rowSelected : COLORS.row;
-                drawRoundedRect(ctx, xPos, yPos, columnWidth, ROW_HEIGHT, BORDER_RADIUS, bgColor);
-                // Draw row label with truncation
+
+                const origIdx = origRowIndices[rowIndex];
+                const label = String(rowLabel(rowIndex));
+                const xPos = x + EXTRA_ROW_PADDING + ROW_PADDING + col * (cardWidth + ROW_PADDING);
+                const yPos = y + EXTRA_ROW_PADDING + row * (CARD_HEIGHT + ROW_PADDING) + ROW_PADDING;
+                const isSelected = selectedRows.has(rowIndex);
+
+                // Thumbnail box, centered horizontally within the card
+                const thumbSize = Math.min(cardWidth - 6, THUMB_SIZE);
+                const thumbX = xPos + (cardWidth - thumbSize) / 2;
+                const thumbY = yPos;
+
+                ctx.fillStyle = "#000000";
+                ctx.fillRect(thumbX, thumbY, thumbSize, thumbSize);
+
+                const img = thumbnailCache.get(String(origIdx));
+                if (img && img.complete && img.naturalWidth > 0) {
+                    const iw = img.naturalWidth, ih = img.naturalHeight;
+                    const scale = Math.min(thumbSize / iw, thumbSize / ih);
+                    const dw = iw * scale, dh = ih * scale;
+                    const dx = thumbX + (thumbSize - dw) / 2, dy = thumbY + (thumbSize - dh) / 2;
+                    ctx.drawImage(img, dx, dy, dw, dh);
+                } else {
+                    ctx.strokeStyle = COLORS.headers;
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(thumbX + 0.5, thumbY + 0.5, thumbSize - 1, thumbSize - 1);
+                }
+
+                if (isSelected) {
+                    ctx.strokeStyle = COLORS.rowSelected;
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(thumbX - 1, thumbY - 1, thumbSize + 2, thumbSize + 2);
+                    ctx.lineWidth = 1;
+                }
+
+                // Caption (style name) below the thumbnail
                 ctx.fillStyle = COLORS.text;
-                ctx.font = "12px Arial";
-                const maxTextWidth = columnWidth - TEXT_PADDING * 2;
-                const textMetrics = ctx.measureText(label);
+                ctx.font = "11px Arial";
+                ctx.textAlign = "center";
+                const maxTextWidth = cardWidth - 4;
                 let displayText = label;
-                if (textMetrics.width > maxTextWidth) {
-                    let truncatedText = label;
+                if (ctx.measureText(displayText).width > maxTextWidth) {
+                    let truncatedText = displayText;
                     while (ctx.measureText(truncatedText + ELLIPSIS).width > maxTextWidth && truncatedText.length > 0) {
                         truncatedText = truncatedText.slice(0, -1);
                     }
                     displayText = truncatedText + ELLIPSIS;
                 }
-                ctx.fillText(displayText, xPos + TEXT_PADDING, yPos + ROW_HEIGHT / 2 + 4);
+                ctx.fillText(displayText, xPos + cardWidth / 2, thumbY + thumbSize + 15);
+                ctx.textAlign = "left";
             }
         }
     }
@@ -362,11 +522,11 @@ async function addXLSXBrowserUI(node) {
         }
         if (localY > TOP_BAR_HEIGHT && localY < this.size[1] - pos - 10) {
             if (localX >= 0 && localX < this.size[0] - SCROLLBAR_WIDTH) {
-                // Calculate which row was clicked
-                const columns = Math.max(2, Math.floor((this.size[0] - SCROLLBAR_WIDTH) / MIN_COLUMN_WIDTH));
+                // Calculate which card was clicked
+                const columns = Math.max(2, Math.floor((this.size[0] - SCROLLBAR_WIDTH) / CARD_WIDTH));
                 const column = Math.floor(localX / ((this.size[0] - SCROLLBAR_WIDTH) / columns));
                 const rowsPerCol = Math.ceil(rows.length / columns);
-                const row = Math.floor((localY - TOP_BAR_HEIGHT + scrollOffset) / (ROW_HEIGHT + ROW_PADDING));
+                const row = Math.floor((localY - TOP_BAR_HEIGHT + scrollOffset) / (CARD_HEIGHT + ROW_PADDING));
                 const rowIndex = row * columns + column;
                 if (rowIndex >= 0 && rowIndex < rows.length) {
                     updateSelectedRows(rowIndex);
